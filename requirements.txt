@@ -1,5 +1,8 @@
+gradio
 pypdf
 sentence-transformers
 faiss-cpu
 numpy
 requests
+torch
+huggingface_hub
