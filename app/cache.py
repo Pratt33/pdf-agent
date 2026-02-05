@@ -34,4 +34,4 @@ class PDFCache:
         self.cache.clear()
 
 # Global cache instance
-pdf_cache = PDFCache(max_size=2)
+pdf_cache = PDFCache(max_size=10)
