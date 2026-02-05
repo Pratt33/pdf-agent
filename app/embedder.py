@@ -11,10 +11,25 @@ def chunk_text(text, chunk_size=400):
         for i in range(0, len(words), chunk_size)
     ]
 
-def create_faiss_index(chunks):
-    embeddings = model.encode(chunks)
-    dim = embeddings.shape[1]
+def create_faiss_index(chunks, batch_size=32):
+    """Create FAISS index with batch processing for better performance"""
+    embeddings = []
+    
+    # Process in batches
+    for i in range(0, len(chunks), batch_size):
+        batch = chunks[i:i + batch_size]
+        batch_embeddings = model.encode(batch)
+        embeddings.append(batch_embeddings)
+    
+    # Combine all embeddings
+    all_embeddings = np.vstack(embeddings) if len(embeddings) > 1 else embeddings[0]
+    dim = all_embeddings.shape[1]
 
     index = faiss.IndexFlatL2(dim)
-    index.add(np.array(embeddings))
+    index.add(np.array(all_embeddings))
     return index
+
+def warmup_model():
+    """Pre-warm the embedding model"""
+    model.encode(["warmup query to load model"])
+    return True

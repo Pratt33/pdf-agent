@@ -1,35 +1,66 @@
 import gradio as gr
 import os
+import asyncio
 from huggingface_hub import InferenceClient
 from app.pdf_loader import load_pdf
-from app.embedder import chunk_text, create_faiss_index, model
+from app.embedder import chunk_text, create_faiss_index, model, warmup_model
 from app.retriever import retrieve
+from app.cache import pdf_cache
 
 client = InferenceClient(api_key=os.getenv("HF_TOKEN"))
 MODEL_ID = "meta-llama/Llama-3.2-3B-Instruct"
 
-def process_pdf(pdf, question):
+async def process_pdf(pdf, question):
     if not pdf:
-        return "⚠️ Please upload a PDF file first."
+        yield "⚠️ Please upload a PDF file first."
+        return
     if not question.strip():
-        return "⚠️ Please enter a question."
+        yield "⚠️ Please enter a question."
+        return
     
     try:
-        text = load_pdf(pdf.name)
-        chunks = chunk_text(text)
-        index = create_faiss_index(chunks)
-        context = "\n".join(retrieve(question, index, chunks, model))
+        # Check cache first
+        pdf_hash = pdf_cache.get_hash(pdf.name)
+        cached_data = pdf_cache.get(pdf_hash)
+        
+        if cached_data:
+            yield "✓ Using cached PDF data...\n"
+            chunks = cached_data['chunks']
+            index = cached_data['index']
+        else:
+            # Progressive loading with status updates
+            yield "📄 Loading PDF...\n"
+            text = await asyncio.to_thread(load_pdf, pdf.name)
+            
+            yield "✂️ Chunking text...\n"
+            chunks = await asyncio.to_thread(chunk_text, text)
+            
+            yield "🔢 Creating embeddings (batch processing)...\n"
+            index = await asyncio.to_thread(create_faiss_index, chunks)
+            
+            # Cache the processed data
+            pdf_cache.set(pdf_hash, {'chunks': chunks, 'index': index})
+            yield "💾 PDF cached for faster future queries...\n"
+        
+        yield "🔍 Retrieving relevant context...\n"
+        context_chunks = await asyncio.to_thread(retrieve, question, index, chunks, model)
+        context = "\n".join(context_chunks)
 
         prompt = f"Use the context to answer.\nContext: {context}\nQuestion: {question}"
         
-        response = client.chat.completions.create(
+        yield "🤖 Generating answer...\n"
+        response = await asyncio.to_thread(
+            client.chat.completions.create,
             model=MODEL_ID,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=500
         )
-        return response.choices[0].message.content
+        
+        # Return final answer
+        yield response.choices[0].message.content
+        
     except Exception as e:
-        return f"❌ Error: {str(e)}"
+        yield f"❌ Error: {str(e)}"
 
 # Custom CSS for better styling
 css = """
@@ -87,6 +118,7 @@ with gr.Blocks() as demo:
         - Upload any PDF document (research papers, reports, books, etc.)
         - Ask specific questions about the content
         - The model uses RAG (Retrieval Augmented Generation) for accurate answers
+        - **Cache enabled**: Same PDF = instant responses! (stores last 2 PDFs)
         """
     )
     
@@ -111,5 +143,10 @@ with gr.Blocks() as demo:
         fn=lambda: (None, "", ""),
         outputs=[pdf_input, question_input, output]
     )
+
+# Pre-warm models on startup
+print("🔥 Warming up models...")
+warmup_model()
+print("✓ Models ready!")
 
 demo.launch(css=css, theme=gr.themes.Soft())
